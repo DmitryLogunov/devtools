@@ -1,4 +1,4 @@
-## DEVLAB - the set of tools for developing sowftware using microservices architecture
+## DEVTOOLS - the set of tools for developing sowftware using microservices architecture
 
 ### The supported stack of techologies
 
