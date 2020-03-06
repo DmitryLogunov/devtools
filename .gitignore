@@ -1,0 +1,16 @@
+/aws-secrets/*
+!/releases/
+/releases/*
+!/releases/release-example/
+!/releases/stable/
+/configuration/*
+!/configuration/devlab.config.template
+!/configuration/devlab.private.dockerconfig.template
+devlab.config
+devlab.aws.dockerconfig
+devlab.private.dockerconfig
+secret-values.*.yaml
+secret-values.yaml
+values.yaml
+/tmp/*
+.vscode/launch.json

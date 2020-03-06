@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+
+import os, sys, json, shutil, yaml, re
+from subprocess import call
+from datetime import datetime
+
+class bcolors:
+  HEADER = '\033[95m'
+  RED = '\033[0;31m'
+  BLUE = '\033[94m'
+  GREEN = '\033[92m'
+  YELLOW = '\033[93m'
+  CYAN = '\033[36m'
+  MAGENTA = '\033[35m'
+  FAIL = '\033[91m'
+  ENDC = '\033[0m'
+  BOLD = '\033[1m'
+  UNDERLINE = '\033[4m'
+
+def help():
+  helpText = """
+      DESCRIPTION:
+
+        The command provides doing some operations with the set of services:
+
+          - building and refreshing the service dependencies (in the folder /node_modules)
+          - building and refreshing JS code from typescript (starting tsc builder)
+          - building docker images
+          - pushing docker images to the docker registry
+
+        All operations can be applied to any sets of services (there are agile tools for filtering services for building the sets of services). 
+        All operations are optional. The scenario of executed operations are agilly defined by flags.
+
+      USAGE:
+
+        ./build [<paremter1>[=value1,value2...] ... <parameterN>]
+
+      REQUIRED PARAMETERS:
+
+        All parameters are optional.        
+
+      PARAMETERS:  
+
+        --included=<value1,value2,...> or --inc=<value1,value2,...>   - the list of included servcies in processing. The values are the titles of folders in folder /microservices. 
+
+        --excluded=<value1,value2,...> or --exc=<value1,value2,...>   - the list of excluded servcies in processing.
+          
+        NOTICE: As defult the set of services in processing is the full list of folders titles in the folder /microservices.
+                The final list of servcies in processing is the full list which is intersected with included servces without exluded services.
+
+        --refresh-node-modules  - refresh all npm dependencies (remove /node_modules and start command 'yarn') 
+
+        --rebuild-ts  - typescript rebuilding (equal starting the command: 'rm -rf ./dist && yarn build' ) 
+
+        --tag=<tag>  - defines the tag which will be used for docker images naming with format <service_name>.<tag>[.<timestamp>]
+                       NOTICE: This parameter is required if it needs to rebuild docker images of servcies!
+
+        --add-timestamp - defines the flag if it needs to add timestamp in docker images tags with format <service_name>.<tag>[.<timestamp>]
+
+        --not-rebuild  - defines the flag which cancels rebuilding docker images (as default all images firstly are rebuilded)
+
+        --release  - defines the current release (the name of folder in /releases). 
+                     If this parameter is defined the list of processing services cretaed rom files /releses/<release>/release.yaml
+                     In this case the parameter --included is ignored.
+
+        --pull     - defines the flag for pulling new images to docker registry. 
+                     The type of current docker registry ('aws' registry or 'private' registry) is defined in ./configuration/devlab.config in 
+                     parameter CURRENT_REGISTRY=<AWS|PRIVATE>
+
+  """
+  print(helpText)
+
+################################## Initializing environment configuration #############
+
+if not os.path.exists('./configuration/devlab.config'):
+  print('\n ERROR: there is no configuration file \'./configuration/devlab.config\'! The script is terminated.\n')
+  sys.exit()  
+
+# paths ...
+SRE_TOOLS_PATH = ''
+RELEASES_PATH = './releases'
+
+# registry settings ...
+CURRENT_REGISTRY = ''
+CURRENT_REGISTRY_HOST = ''
+CURRENT_REGISTRY_FOLDER = ''
+AWS_REGISTRY_HOST = ''
+AWS_REGISTRY_FOLDER = ''
+PRIVATE_REGISTRY_HOST = ''
+PRIVATE_REGISTRY_FOLDER = ''
+
+# flags ...
+REBUILD = 1
+REFRESH_NODE_MODULES = 0
+REBUILD_TS = 0
+NEED_PULL = 0
+
+# images tag ...
+TAG = ''
+ADDITIONAL_TIMESTAMP = ''
+
+# services lists ...
+excludedNotServices = ['.DS_Store', '.vscode']
+excluded = []
+included = []
+
+with open('./configuration/devlab.config') as fp:
+  for line in fp:
+    [key, value] = line.split('=')
+    if key == 'SRE_TOOLS_PATH':
+      SRE_TOOLS_PATH = value.replace('\n', '')
+    if key == 'RELEASES_PATH':
+      RELEASES_PATH = value.replace('\n', '')     
+    if key == 'CURRENT_REGISTRY':
+      CURRENT_REGISTRY = value.replace('\n', '')      
+    if key == 'PRIVATE_REGISTRY_HOST':
+      PRIVATE_REGISTRY_HOST = value.replace('\n', '')  
+    if key == 'PRIVATE_REGISTRY_FOLDER':
+      PRIVATE_REGISTRY_FOLDER = value.replace('\n', '')     
+    if key == 'AWS_REGISTRY_HOST':
+      AWS_REGISTRY_HOST = value.replace('\n', '')  
+    if key == 'AWS_REGISTRY_FOLDER':
+      AWS_REGISTRY_FOLDER = value.replace('\n', '')    
+
+if SRE_TOOLS_PATH == '':
+  print('\n WARNING: it seems the parameter SRE_TOOLS_PATH is undefined. It\'s recommend to check the configuration file ./configuration/devlab.config \n')
+
+################################## Initializing services list #########################
+
+SRE_TOOLS_MICROSERVICES_PATH = '%s/microservices' % SRE_TOOLS_PATH
+
+if len(sys.argv) > 1:
+  for arg in sys.argv:
+    if re.search('--included=', arg) or re.search('--inc=', arg):
+      if re.search('--included=', arg):
+        included = arg.replace('--included=', '').split(',')
+      if re.search('--inc=', arg):
+        included = arg.replace('--inc=', '').split(',')  
+    if re.search('--excluded=', arg) or re.search('--exc=', arg):
+      if re.search('--excluded=', arg):
+        excluded = arg.replace('--excluded=', '').split(',')
+      if re.search('--exc=', arg):
+        excluded = arg.replace('--exc=', '').split(',')        
+    if re.search('--refresh-node-modules', arg):
+      REFRESH_NODE_MODULES = 1
+    if re.search('--rebuild-ts', arg):
+      REBUILD_TS = 1 
+    if re.search('--tag', arg):
+      TAG = arg.replace('--tag=', '')
+    if re.search('--add-timestamp', arg):
+      ADDITIONAL_TIMESTAMP = datetime.now().isoformat(sep='_', timespec='seconds').replace(':', '-')    
+    if re.search('--pull', arg):   
+      NEED_PULL = 1
+    if re.search('--not-rebuild', arg):   
+      REBUILD = 0 
+    if re.search('--release', arg):
+      currentRelease = arg.replace('--release=', '') 
+      currentReleasePath = '%s/%s' % (RELEASES_PATH, currentRelease) 
+      with open('%s/release.yaml' % currentReleasePath, 'r') as f: 
+        releaseServicesSettings = yaml.load(f, Loader=yaml.FullLoader)
+        included = releaseServicesSettings['servicesSettings'].keys()
+    if re.search('-r=', arg):
+      currentRelease = arg.replace('-r=', '') 
+      currentReleasePath = '%s/%s' % (RELEASES_PATH, currentRelease) 
+      with open('%s/release.yaml' % currentReleasePath, 'r') as f: 
+        releaseServicesSettings = yaml.load(f, Loader=yaml.FullLoader)
+        included = releaseServicesSettings['servicesSettings'].keys()        
+    if re.search('--help', arg):    
+      help()
+      sys.exit()
+
+################################## Configure images tags #######################################
+
+fullServicesList = [s for s in os.listdir(SRE_TOOLS_MICROSERVICES_PATH) if s not in excludedNotServices]
+servicesForProcessing = [s for s in fullServicesList if s not in excluded]
+if len(included) > 0:
+  servicesForProcessing = [s for s in included if s in servicesForProcessing]
+
+################################## Building and pulling images of services in set #######################################
+
+for serviceDir in servicesForProcessing:
+  print(' \n %s ---------------------------- SERVICE: %s. ------------------------- %s \n' % (bcolors.YELLOW, serviceDir, bcolors.ENDC)) 
+
+  servicePath = '%s/%s' % (SRE_TOOLS_MICROSERVICES_PATH, serviceDir)
+    
+  if REFRESH_NODE_MODULES == 1: 
+    print(' \n %s Refreshing dependencies .... %s \n' % (bcolors.YELLOW, bcolors.ENDC))       
+    call('sudo rm -rf %s/node_modules' % servicePath,  shell=True)
+
+  if not os.path.exists('%s/node_modules' % servicePath):
+    call('(cd %s && yarn)' % servicePath,  shell=True)
+
+  if REBUILD_TS == 1:
+    print(' \n %s TS building .... %s \n' % (bcolors.YELLOW, bcolors.ENDC))  
+    call('(cd %s && yarn build)' % servicePath,  shell=True)  
+
+  if REBUILD == 1:
+    if TAG == '':
+      print('\n ERROR: the TAG for images building is undefined\'! The script is terminated.\n')
+      sys.exit()  
+
+    if ADDITIONAL_TIMESTAMP != '':
+      TAG = '%s.%s' % (TAG, ADDITIONAL_TIMESTAMP)
+
+    print(' \n %s Docker image building .... %s \n' % (bcolors.YELLOW, bcolors.ENDC))
+
+    dockerfilePath = '%s/Dockerfile' % servicePath
+    if os.path.islink(dockerfilePath):
+      dockerfilePath = '%s/%s' % (SRE_TOOLS_PATH, os.readlink(dockerfilePath).replace('../../', ''))
+    call('(cd %s && docker build -f %s -t %s.%s . )' % (servicePath, dockerfilePath, serviceDir, TAG), shell=True)
+
+  if NEED_PULL == 1:
+    print(' \n %s Docker images pulling to registry .... %s \n' % (bcolors.YELLOW, bcolors.ENDC))
+
+    if CURRENT_REGISTRY == '':
+      print('\n ERROR: necessary for pulling images parameters CURRENT_REGISTRY is undefined\'! The script is terminated.\n')
+      sys.exit() 
+
+    if CURRENT_REGISTRY == 'AWS':
+      CURRENT_REGISTRY_HOST = AWS_REGISTRY_HOST
+      CURRENT_REGISTRY_FOLDER = AWS_REGISTRY_FOLDER
+      
+      awsDdockerconfigPath = './configuration/devlab.aws.dockerconfig'
+
+      if os.path.exists(awsDdockerconfigPath):
+        lasttimeDockerconfigModified = os.path.getmtime(awsDdockerconfigPath)
+        lifeperiodDockerconfig = round(datetime.now().timestamp()) - round(lasttimeDockerconfigModified)
+        _12HoursInSeconds = 43200 
+        if lifeperiodDockerconfig > _12HoursInSeconds:
+          os.remove(awsDdockerconfigPath) 
+      
+      if not os.path.exists(awsDdockerconfigPath):
+        call('./refresh-aws-access',  shell=True)
+    else:
+      CURRENT_REGISTRY_HOST = PRIVATE_REGISTRY_HOST
+      CURRENT_REGISTRY_FOLDER = PRIVATE_REGISTRY_FOLDER      
+
+    if CURRENT_REGISTRY_HOST == '' or CURRENT_REGISTRY_FOLDER == '':
+      print('\n ERROR: necessary for pulling images parameters CURRENT_REGISTRY_HOST or CURRENT_REGISTRY_FOLDER are undefined\'! The script is terminated.\n')
+      sys.exit() 
+
+    call('docker tag %s.%s %s/%s:%s.%s' % (serviceDir, TAG, CURRENT_REGISTRY_HOST, CURRENT_REGISTRY_FOLDER, serviceDir, TAG), shell=True)
+    call('docker push %s/%s:%s.%s' % (CURRENT_REGISTRY_HOST, CURRENT_REGISTRY_FOLDER, serviceDir, TAG), shell=True)

@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+
+import os, sys, json, shutil, re
+from subprocess import call
+
+class bcolors:
+  HEADER = '\033[95m'
+  RED = '\033[0;31m'
+  BLUE = '\033[94m'
+  GREEN = '\033[92m'
+  YELLOW = '\033[93m'
+  CYAN = '\033[36m'
+  MAGENTA = '\033[35m'
+  FAIL = '\033[91m'
+  ENDC = '\033[0m'
+  BOLD = '\033[1m'
+  UNDERLINE = '\033[4m'
+
+def help():
+  helpText = """
+      DESCRIPTION:
+
+        Runs unit tests for the some set of services and prints out the summary resluts.
+        There are agile tools for filtering services for building the sets of services.
+
+      USAGE:
+
+        ./run-tests [<paremter1>[=value1,value2...] ... <parameterN>]
+
+      REQUIRED PARAMETERS:
+
+        All parameters are optional.       
+
+      PARAMETERS:  
+
+        --included=<value1,value2,...>    - the list of included servcies in processing. The values are the titles of folders in folder /microservices. 
+
+        --exluded=<value1,value2,...>     - the list of excluded servcies in processing.
+          
+        NOTICE: As defult the set of services in processing is the full list of folders titles in the folder /microservices.
+                The final list of servcies in processing is the full list which is intersected with included servces without exluded services.
+
+        --refresh-node-modules  - refresh all npm dependencies (remove /node_modules and start command 'yarn') 
+
+        --rebuild-ts  - typescript rebuilding (equal starting the command: 'rm -rf ./dist && yarn build' ) 
+
+        --release  - defines the current release (the name of folder in /releases). 
+                     If this parameter is defined the list of processing services cretaed rom files /releses/<release>/release.yaml
+                     In this case the parameter --included is ignored.
+  """
+  print(helpText)    
+
+if not os.path.exists('./configuration/devlab.config'):
+  print('\n ERROR: there is no configuration file \'./configuration/devlab.config\'! The script is terminated.\n')
+  sys.exit()  
+
+SRE_TOOLS_PATH = ''
+
+with open('./configuration/devlab.config') as fp:
+  for line in fp:
+    [key, value] = line.split('=')
+    if key == 'SRE_TOOLS_PATH':
+      SRE_TOOLS_PATH = value.replace('\n', '')
+
+if SRE_TOOLS_PATH == '':
+  print('\n WARNING: it seems the parameter SRE_TOOLS_PATH is undefined. It\'s recommend to check the configuration file ./configuration/devlab.config \n')
+
+SRE_TOOLS_MICROSERVICES_PATH = '%s/microservices' % SRE_TOOLS_PATH
+
+results = { 'successfull': [], 'fail': []}
+
+REFRESH_NODE_MODULES = 0
+REBUILD_TS = 0
+
+excludedNotServices = ['.DS_Store', '.vscode']
+excluded = []
+included = []
+
+if len(sys.argv) > 1:
+  for arg in sys.argv:
+    if re.search('--included', arg):
+      included = arg.replace('--included=', '').split(',')
+    if re.search('--excluded', arg):
+      excluded = arg.replace('--excluded=', '').split(',')
+    if re.search('-refresh-node-modules', arg):
+      REFRESH_NODE_MODULES = 1
+    if re.search('-rebuild-ts', arg):
+      REBUILD_TS = 1
+    if re.search('--release', arg):
+      currentRelease = arg.replace('--release=', '') 
+      currentReleasePath = '%s/%s' % (RELEASES_PATH, currentRelease) 
+      with open('%s/release.yaml' % currentReleasePath, 'r') as f: 
+        releaseServicesSettings = yaml.load(f, Loader=yaml.FullLoader)
+        included = releaseServicesSettings['servicesSettings'].keys() 
+    if re.search('--help', arg):    
+      help()
+      sys.exit()                
+
+fullServicesList = [s for s in os.listdir(SRE_TOOLS_MICROSERVICES_PATH) if s not in excludedNotServices]
+servicesForTesting = [s for s in fullServicesList if s not in excluded]
+if len(included) > 0:
+  servicesForTesting = [s for s in included if s in servicesForTesting]
+
+for serviceDir in servicesForTesting:
+  print(' \n %s ---------------------------- SERVICE: %s. Start tests .... -------------------- %s \n' % (bcolors.YELLOW, serviceDir, bcolors.ENDC))
+
+  servicePath = '%s/%s' % (SRE_TOOLS_MICROSERVICES_PATH, serviceDir)
+    
+  if os.path.exists('%s/test-results.log' % servicePath):
+    os.remove('%s/test-results.log' % servicePath)
+
+  if REFRESH_NODE_MODULES == 1:      
+    call('sudo rm -rf %s/node_modules' % servicePath,  shell=True)
+
+  if not os.path.exists('%s/node_modules' % servicePath):
+    call('(cd %s && yarn)' % servicePath,  shell=True)
+
+  if REBUILD_TS == 1:
+    call('(cd %s && yarn build)' % servicePath,  shell=True)  
+
+  call('(cd %s && yarn test --json --outputFile=test-results.log)' % servicePath, shell=True)
+
+  if os.path.exists('%s/test-results.log' % servicePath):
+    with open('%s/%s' % (servicePath, 'test-results.log'), 'r') as f:
+      servcieTestsResults = json.load(f)
+
+      print( '\n%s SERVICE: %s %s --> success:  %s %s,  %s errors: %s  %s' % (bcolors.YELLOW, serviceDir, bcolors.GREEN, bcolors.ENDC, servcieTestsResults['numPassedTestSuites'], bcolors.RED, bcolors.ENDC, servcieTestsResults['numFailedTestSuites']))
+
+      if int(servcieTestsResults['numFailedTestSuites']) == 0 :
+        results['successfull'].append(' - %s: %s%s%s/%s%s%s' % (serviceDir, bcolors.GREEN, servcieTestsResults['numPassedTestSuites'], bcolors.ENDC, bcolors.RED, servcieTestsResults['numFailedTestSuites'], bcolors.ENDC))
+      else:
+        results['fail'].append(' - %s: %s%s%s/%s%s%s' % (serviceDir, bcolors.GREEN, servcieTestsResults['numPassedTestSuites'], bcolors.ENDC, bcolors.RED, servcieTestsResults['numFailedTestSuites'], bcolors.ENDC)) 
+
+    os.remove('%s/test-results.log' % servicePath)   
+  else:  
+    results['fail'].append(' - %s: wrong running tests' % serviceDir)
+
+print('\n%s ------------------------------ %s' % (bcolors.YELLOW, bcolors.ENDC))
+print('\n%s SUMMARY REPORT:%s\n' % (bcolors.YELLOW, bcolors.ENDC))
+
+print('%s successfull tests: %s\n' % (bcolors.YELLOW, bcolors.ENDC))
+if len(results['successfull']) > 0:
+  for serviceStat in results['successfull']:  
+    print(serviceStat)
+else:
+  print('there are no successfull tests')    
+
+print('\n %s fail tests: %s\n' % (bcolors.YELLOW, bcolors.ENDC))
+if len(results['fail']) > 0:
+  for serviceStat in results['fail']:
+    print(serviceStat)
+else:
+  print('  - there are no fail tests')
+
+print('\n')       

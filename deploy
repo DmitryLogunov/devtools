@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+
+import os, sys, yaml, re
+from subprocess import call, check_output
+from datetime import datetime
+from hashlib import sha256
+
+class bcolors:
+  HEADER = '\033[95m'
+  RED = '\033[0;31m'
+  BLUE = '\033[94m'
+  GREEN = '\033[92m'
+  YELLOW = '\033[93m'
+  CYAN = '\033[36m'
+  MAGENTA = '\033[35m'
+  FAIL = '\033[91m'
+  ENDC = '\033[0m'
+  BOLD = '\033[1m'
+  UNDERLINE = '\033[4m'
+
+def help():
+  helpText = """
+      DESCRIPTION:
+
+        The command provides deploying the some set of services to kubernetes cluster. 
+        
+        As optional this command can refresh Helm values file (values.yaml) if it's need. 
+        The result file values.yaml is saved in the folder of current release 
+        (./releases/<current-release-name>/values.yml) and applied in the process of deploying.
+        
+        There are the agily set of tools for managing of current release setting with using the scpecial configuration 
+        in YAML file ./releases/<current-release-name>/release.yml 
+        (see the example in folder ./releases/<release-example>/release.yml) 
+        All values from ./releases/<current-release-name>/release.yml merges with the current values 
+        file in ./releases/<current-release-name>/values.yml
+
+      USAGE:
+
+        ./deploy [<paremter1>[=value1,value2...] ... <parameterN>]
+
+      REQUIRED PARAMETERS:
+        
+        All parameters are optional.
+
+        DEFAULT VALUES:
+
+          NAMESPACE (--namespace) - the current namespace(and release name in the current Kubernetes cluster);
+                                    is defined in ./configuration/devlab.config as default
+
+          ENVIRONMNET (--env) - the current environmet (the name of current Kubernetes cluster);
+                                is defined in ./configuration/devlab.config as default
+
+          SRE_TOOLS_PATH (--sre-tools-path) - the path to sre_toole on local machine;
+                                              is defined in ./configuration/devlab.config as default
+
+          RELEASES_PATH  (--releases-path) - the path to releases folder in /sre_tools/deployment/devlab on local machine;
+                                               is defined in ./configuration/devlab.config
+                                               it's recommended to use RELEASES_PATH = releases
+
+          RELEASE  ( --release) - the name of current release; if this parameter is undefined the new folder with name YYYY-MM-DD_HH-MM-SS (curent date-time)
+                    will be creted in <SRE_TOOLS_PATH>/<RELEASES_PATH>/ folder and the parameter currentRelease will be defined as YYYY-MM-DD_HH-MM-SS
+                    It can be usefull for getting the actual version of helm values.yaml file with default values.
+                    Until this release not be added the file release.yaml with actual settings of services this release won't be able to used for deploy.
+
+          DEPLOY_MODE  (-i, --install, -u, --update) - if this parameter is undefined the script will try to define it by analize of the list of Helm releases
+                                                        It will try to find the release with current release name. If there is the release with current release name
+                                                        the DEPLOY_MODE will defined as 'update' if not as 'install'.   
+
+          REFRESH_VALUES (--not-refresh-values) - As default the script refreshes values.yaml each time it starts (REFRESH_VALUES = true).
+
+      PARAMETERS from command arguments:  
+
+        --install, -i  - defines DEPLOY_MODE as 'install' so Helm starts deploy process creating new release
+
+        --update, -u  - defines DEPLOY_MODE as 'update' so Helm starts deploy process upgrading current release
+          
+        --env=<environment> - defines current environment (changes the default value). 
+                              The default value is defined in ./configuration/devlab.config in ENVIRONMENT variable.
+                              For local machines this parameter should be 'minikube'.
+
+        --namespace=<namespace> - defines the name of namespace in Kubernetes cluster (changes the default value). 
+                                  The default values is defined in ./configuration/devlab.config in NAMESPACE variable.
+
+        --sre-path=<sre-tools-path> - the absulute path to the folder '/sre-tools' on local machine (changes the default value). 
+                                      The default value is defined in ./configuration/devlab.config in SRE_TOOLS_PATH variable.
+
+        --release=<release-name>  - defines the current release (the name of folder in /releases). 
+                                    If this parameter is defined the settings of current release are defined in /releses/<release>/release.yaml
+                                    If this parameter is undefined the script create new folder in /releses with name 'YYYY-MM-DD_HH-MM-SS' and 
+                                    create there the file values.yaml with default values.
+
+        --not-refresh-values - sets flag REFRESH_VALUES in the falsy value so the script does not refresh the file values.yaml
+                               As default the script refreshes values.yaml each time it starts.
+  """
+  print(helpText)    
+
+############################### Initializing helper functions ########################
+
+def val2Str(val):
+  if val == True or val == False:
+    return str(val).lower()
+  return str(val)   
+
+###########################################
+
+def mergeValuesYAMLFiles(valuesTemplateFilePath, valuesForMergingFilePath, currentReleaseValuesFilePath):
+  valuesTemplateAsLines = [line.rstrip('\n') for line in open(valuesTemplateFilePath)]
+
+  with open(valuesForMergingFilePath, 'r') as f: 
+    environmentDefaultValues = yaml.load(f, Loader=yaml.FullLoader)
+    if 'commonSettings' in environmentDefaultValues:
+      for property in environmentDefaultValues['commonSettings']:
+        propertyTemplate = '{:commonSettings_%s:}' % property
+        propertyValue = val2Str(environmentDefaultValues['commonSettings'][property])
+        for i, line in enumerate(valuesTemplateAsLines):   
+          valuesTemplateAsLines[i] = re.sub(propertyTemplate, propertyValue, valuesTemplateAsLines[i])
+
+    for serviceName in environmentDefaultValues['servicesSettings']:
+      for property in environmentDefaultValues['servicesSettings'][serviceName]:
+        propertyTemplate = '{:servicesSettings_%s_%s:}' % (serviceName, property)
+        propertyValue = val2Str(environmentDefaultValues['servicesSettings'][serviceName][property])
+        for i, line in enumerate(valuesTemplateAsLines):   
+          valuesTemplateAsLines[i] = re.sub(propertyTemplate, propertyValue, valuesTemplateAsLines[i])
+
+  if os.path.exists(currentReleaseValuesFilePath):
+    os.remove(currentReleaseValuesFilePath)
+
+  with open(currentReleaseValuesFilePath, 'w') as f:
+    for line in valuesTemplateAsLines:
+      f.write('%s \n' % line)
+
+##############################################
+
+def refreshValuesHash(valuesFilePath):
+  valuesDataCache = ''
+  with open(currentReleaseValuesFilePath, 'r') as f:
+    valuesData = f.read() 
+    valuesDataCache = sha256(valuesData.encode('utf-8')).hexdigest()
+
+  with open(currentReleaseValuesFilePath, 'a+') as f:  
+    f.write('valuesHash: %s' % valuesDataCache) 
+
+################################## Initializing environment configuration ############# 
+
+if not os.path.exists('./configuration/devlab.config'):
+  print('\n ERROR: there is no configuration file \'./configuration/devlab.config\'! The script is terminated.\n')
+  sys.exit()  
+
+SRE_TOOLS_PATH = ''
+ENVIRONMENT = ''
+RELEASES_PATH = './releases'
+currentReleasePath = ''
+REFRESH_VALUES = 1
+DEPLOY_MODE = ''
+CURRENT_REGISTRY_HOST = ''
+CURRENT_REGISTRY_FOLDER = ''
+DOCKERCONFIG_REGISTRY_TOKEN = ''
+DEBUG_MODE = 0
+
+with open('./configuration/devlab.config') as fp:
+  for line in fp:
+    [key, value] = line.split('=')
+    if key == 'SRE_TOOLS_PATH':
+      SRE_TOOLS_PATH = value.replace('\n', '')
+    if key == 'RELEASES_PATH':
+      RELEASES_PATH = value.replace('\n', '')  
+    if key == 'ENVIRONMENT':
+      ENVIRONMENT = value.replace('\n', '') 
+    if key == 'NAMESPACE':
+      NAMESPACE = value.replace('\n', '')  
+    if key == 'CURRENT_REGISTRY':
+      CURRENT_REGISTRY = value.replace('\n', '') 
+    if key == 'PRIVATE_REGISTRY_HOST':
+      PRIVATE_REGISTRY_HOST= value.replace('\n', '') 
+    if key == 'PRIVATE_REGISTRY_FOLDER':
+      PRIVATE_REGISTRY_FOLDER = value.replace('\n', '') 
+    if key == 'AWS_REGISTRY_HOST':
+      AWS_REGISTRY_HOST = value.replace('\n', '') 
+    if key == 'AWS_REGISTRY_FOLDER':
+      AWS_REGISTRY_FOLDER = value.replace('\n', '') 
+
+SRE_TOOLS_HELM_CHART_API_V3_PATH =  '%s/deployment/kubernetes/helm-charts/api-v3' % SRE_TOOLS_PATH  
+
+if len(sys.argv) > 1:
+  for arg in sys.argv:
+    if re.search('--env', arg):
+      ENVIRONMENT = arg.replace('--env=', '')
+    if re.search('--sre-path', arg):
+      SRE_TOOLS_PATH = arg.replace('--sre-path=', '')
+    if re.search('--release', arg):
+      currentRelease = arg.replace('--release=', '') 
+      currentReleasePath = '%s/%s' % (RELEASES_PATH, currentRelease)   
+    if re.search('-r=', arg):
+      currentRelease = arg.replace('-r=', '') 
+      currentReleasePath = '%s/%s' % (RELEASES_PATH, currentRelease)             
+    if re.search('--not-refresh-values', arg):
+      REFRESH_VALUES = 0
+    if re.search('--namespace', arg):
+      NAMESPACE = arg.replace('--namespace=', '')       
+    if re.search('--install', arg):
+      DEPLOY_MODE = 'install' 
+    if arg == '-i':
+      DEPLOY_MODE = 'install'        
+    if re.search('--update', arg):
+      DEPLOY_MODE = 'update'    
+    if arg == '-u':
+      DEPLOY_MODE = 'update' 
+    if re.search('--debug', arg):
+      DEBUG_MODE = 1    
+    if re.search('--help', arg):    
+      help()
+      sys.exit()   
+
+if NAMESPACE == '':
+  print('\n ERROR: the NAMESPACE is undefined! The script is terminated.\n')
+  sys.exit()
+
+if DEPLOY_MODE == '':
+  resultHelmReleasesList = check_output(["helm", "list"]).decode()
+  checkIfCurrentReleaseExists = re.search(NAMESPACE, resultHelmReleasesList)
+  if checkIfCurrentReleaseExists == None:
+    DEPLOY_MODE = 'install'
+  else:
+    DEPLOY_MODE = 'update'  
+
+if SRE_TOOLS_PATH == '':
+  print('\n WARNING: it seems the parameter SRE_TOOLS_PATH is undefined. It\'s recommend to check the configuration file ./configuration/devlab.config \n')
+
+if currentReleasePath == '':
+  currentDateTime = datetime.now().isoformat(sep='_', timespec='seconds').replace(':', '-')
+  currentReleasePath = '%s/%s' % (RELEASES_PATH, currentDateTime)  
+
+if not os.path.exists(currentReleasePath):
+    call('mkdir %s' % currentReleasePath,  shell=True) 
+
+################################## Refreshing release values if need ######################### 
+
+currentReleaseValuesFilePath = '%s/values.yaml' % currentReleasePath
+
+if REFRESH_VALUES == 1:
+  print(' \n %s Refreshing release values .... %s \n' % (bcolors.YELLOW, bcolors.ENDC)) 
+
+  if os.path.exists('%s/release.yaml' % currentReleasePath):
+    # merging template with current release values  
+    valuesTemplateFilePath = '%s/values.yaml.template' % SRE_TOOLS_HELM_CHART_API_V3_PATH
+    environmentDefaultValuesFilename = 'default.services-values.%s.yaml' % ENVIRONMENT
+    valuesForMergingFilePath = '%s/release.yaml' % currentReleasePath 
+    mergeValuesYAMLFiles(valuesTemplateFilePath, valuesForMergingFilePath, currentReleaseValuesFilePath)
+
+    # merging template with default values
+    valuesForMergingFilePath = '%s/%s' % (SRE_TOOLS_HELM_CHART_API_V3_PATH, environmentDefaultValuesFilename)   
+    mergeValuesYAMLFiles(currentReleaseValuesFilePath, valuesForMergingFilePath, currentReleaseValuesFilePath)
+  else:
+    # merging template with default values  
+    valuesTemplateFilePath = '%s/values.yaml.template' % SRE_TOOLS_HELM_CHART_API_V3_PATH
+    environmentDefaultValuesFilename = 'default.services-values.%s.yaml' % ENVIRONMENT
+    valuesForMergingFilePath = '%s/%s' % (SRE_TOOLS_HELM_CHART_API_V3_PATH, environmentDefaultValuesFilename) 
+    mergeValuesYAMLFiles(valuesTemplateFilePath, valuesForMergingFilePath, currentReleaseValuesFilePath) 
+  
+  refreshValuesHash(currentReleaseValuesFilePath)
+
+###################################### Deploing ###################################################
+if DEPLOY_MODE != 'install' and  DEPLOY_MODE != 'update':
+  print('\n ERROR: the DEPLOY_MODE (input or update) is undefined! The script is terminated.\n')
+  sys.exit()
+
+if NAMESPACE == '':
+  print('\n ERROR: the NAMESPACE of deploying environment is undefined! The script is terminated.\n')
+  sys.exit() 
+
+if CURRENT_REGISTRY == '':
+  print('\n ERROR: the CURRENT_REGISTRY parameter is undefined! The script is terminated.\n')
+  sys.exit() 
+
+if CURRENT_REGISTRY == 'AWS':  
+  CURRENT_REGISTRY_HOST = AWS_REGISTRY_HOST 
+  CURRENT_REGISTRY_FOLDER = AWS_REGISTRY_FOLDER
+  
+  awsDdockerconfigPath = './configuration/devlab.aws.dockerconfig'
+
+  if os.path.exists(awsDdockerconfigPath):
+    lasttimeDockerconfigModified = os.path.getmtime(awsDdockerconfigPath)
+    lifeperiodDockerconfig = round(datetime.now().timestamp()) - round(lasttimeDockerconfigModified)
+    _12HoursInSeconds = 43200 
+    if lifeperiodDockerconfig > _12HoursInSeconds:
+      os.remove(awsDdockerconfigPath) 
+  
+  if not os.path.exists(awsDdockerconfigPath):
+    call('./refresh-aws-access',  shell=True) 
+
+  if os.path.exists(awsDdockerconfigPath):  
+    with open(awsDdockerconfigPath) as fp:
+      for line in fp:
+        DOCKERCONFIG_REGISTRY_TOKEN = line.replace('\n', '')      
+else:
+  CURRENT_REGISTRY_HOST = PRIVATE_REGISTRY_HOST 
+  CURRENT_REGISTRY_FOLDER = PRIVATE_REGISTRY_FOLDER
+  if os.path.exists('./configuration/devlab.private.dockerconfig'):
+    with open('./configuration/devlab.private.dockerconfig') as fp:
+      for line in fp:
+        DOCKERCONFIG_REGISTRY_TOKEN = line.replace('\n', '') 
+  else:
+    print('\n WARNING: the \'./configuration/devlab.private.dockerconfig\' file with private docker registry token is missing! \n Check if the property \'dockerconfig\' is defined and correct in secret-values.yaml or refresh this token and write it down to \'./configuration/devlab.private.dockerconfig\'! \n')         
+
+if CURRENT_REGISTRY_HOST == '' or CURRENT_REGISTRY_FOLDER == '' or ( CURRENT_REGISTRY == 'AWS' and DOCKERCONFIG_REGISTRY_TOKEN == '' ):
+  print('\n ERROR: the CURRENT_REGISTRY_HOST or/and CURRENT_REGISTRY_FOLDER or/and DOCKERCONFIG_REGISTRY_TOKEN parameters are undefined! The script is terminated.\n')
+  sys.exit()   
+
+currentReleaseDockerconfigSecretValuesFilePath = '%s/secret-values.dockerconfig.yaml' % currentReleasePath
+if os.path.exists(currentReleaseDockerconfigSecretValuesFilePath):
+  os.remove(currentReleaseDockerconfigSecretValuesFilePath)
+
+with open(currentReleaseDockerconfigSecretValuesFilePath, 'w') as f:
+  f.write('repository: %s/%s \n' % (CURRENT_REGISTRY_HOST, CURRENT_REGISTRY_FOLDER)) 
+  f.write('dockerconfig: %s \n' % DOCKERCONFIG_REGISTRY_TOKEN) 
+
+currentReleaseValuesAbsPath = '%s/deployment/devlab/%s' % (SRE_TOOLS_PATH, currentReleaseValuesFilePath.replace('./', '')) 
+dockerconfigSecretValuesAbsPath = '%s/deployment/devlab/%s' % (SRE_TOOLS_PATH, currentReleaseDockerconfigSecretValuesFilePath.replace('./', '')) 
+
+print(' \n %s Deploing .... %s \n' % (bcolors.YELLOW, bcolors.ENDC))
+
+debugFlags = ''
+if DEBUG_MODE == 1:
+  debugFlags = '--debug --dry-run'
+
+if DEPLOY_MODE == 'install':  
+  cmd = '( cd %s/deployment/kubernetes/helm-charts/api-v3 && helm install ./ --name %s --namespace %s %s -f %s -f ./secret-values.yaml -f %s )' % (SRE_TOOLS_PATH, NAMESPACE, NAMESPACE, debugFlags, currentReleaseValuesAbsPath, dockerconfigSecretValuesAbsPath)
+  print('  Command: \n\n %s \n\n ------------------------------- \n\n' % cmd)
+  call(cmd,  shell=True) 
+if DEPLOY_MODE == 'update':  
+  cmd = '( cd %s/deployment/kubernetes/helm-charts/api-v3 && helm upgrade %s --namespace %s . %s -f %s -f ./secret-values.yaml -f %s )' % (SRE_TOOLS_PATH, NAMESPACE, NAMESPACE, debugFlags, currentReleaseValuesAbsPath, dockerconfigSecretValuesAbsPath)  
+  print('  Command: \n\n %s \n\n ------------------------------- \n\n' % cmd)
+  call(cmd,  shell=True) 

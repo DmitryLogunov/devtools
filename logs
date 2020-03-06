@@ -1,0 +1,30 @@
+#! /bin/sh
+
+if [[ "${1}" = "--help" ]]; then
+  echo "\n   DESCRIPTION:"
+  echo "\n     Prints out the logs from STDOUT of some service which executes in some pod of kubernetes cluster"
+  echo "\n   USAGE:"
+  echo "\n     ./logs  <service-aliace>"
+  echo "\n   REQUIRED PARAMETERS:"
+  echo "\n     There is one required parameter SERVICE_ALIACE which defines in the first argument." 
+  echo "\n     The parameter SERVICE_ALIACE should contain some first letters of service name (the same the name of service folder in the folder /microservices ).\n"
+  echo "\n   EXAMPLE:"
+  echo "\n     ./logs accounts"
+  echo "\n   or (with the same result)"
+  echo "\n     ./logs acc\n"
+  exit
+fi
+
+if [[ "${1}" = "" ]]; then
+  echo "\n ERROR: the parameter SERVICE-ALIASE of service (the first argument in command line) is required and undefined!' The script is terminated.\n"
+  exit
+fi
+
+if [[ ! -f "./configuration/devlab.config" ]]; then
+  echo "\n ERROR: there is no configuration file './configuration/devlab.config'! The script is terminated.\n"
+  exit
+fi
+
+eval $(cat ./configuration/devlab.config)
+
+kubectl logs -f $(kubectl get pods -n ${NAMESPACE} | grep ${1} | awk '{ print $1 '}) -n ${NAMESPACE}

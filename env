@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+
+import sys, re, os
+from subprocess import call
+from os import listdir
+from os.path import isdir, join
+try:
+    import thread
+except ImportError:
+    import _thread as thread
+
+TMP_FOLDER_PATH = ''
+SRE_TOOLS_PATH = ''
+cmd = ''
+STORAGES_NAMESPACE = ''
+
+with open('./configuration/devlab.config') as fp:
+  for line in fp:
+    [key, value] = line.split('=')
+    if key == 'SRE_TOOLS_PATH':
+      SRE_TOOLS_PATH = value.replace('\n', '')
+    if key == 'TMP_FOLDER_PATH':
+      TMP_FOLDER_PATH = str.strip(value.replace('\n', ''))
+    if key == 'STORAGES_NAMESPACE':
+      STORAGES_NAMESPACE = str.strip(value.replace('\n', ''))    
+
+if len(sys.argv) > 1:
+  for arg in sys.argv:
+    if re.search('--help', arg) or re.search('-h', arg):
+      help = """
+        USAGE:         
+
+          ./env <action>=<service> 
+           
+        POSSIBLE VALUES FOR PARAMETER <action>:
+
+          --start , -s          => starting some service
+
+          --port-forward, -pf   => forwarding ports of services that had been started in minikube 
+        
+        FOR MORE DETEAL INFORMATION ABOUT POSSSBLE VALUES FOR PARAMETER <service> RUN:
+
+          ./env <action>=?
+
+      """
+      print(help)
+      sys.exit()
+
+    if re.search('--start=', arg) or re.search('-s=', arg):
+      if re.search('--start=', arg):
+        service = arg.replace('--start=', '')
+      if re.search('-s=', arg):
+        service = arg.replace('-s=', '')
+      if service == '?':
+        help = """
+          USAGE:         
+
+            ./env --start=<service> 
+
+            or
+
+            ./env -s=<service>
+
+          POSSIBLE VALUES FOR PARAMETER <service>:
+
+            mk , minikube        <=>   minikube start
+            
+            dm , docker-machine  <=>   docker-machine start
+
+            cmp                  <=>   cd <SRE_TOOLS_PATH>/client-web/cmp && yarn && yarn start
+
+            chrome               <=>   cd <TMP_FOLDER_PATH> && /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --disable-web-security --user-data-dir=~/ChromeUserData-<N>/
+                                          
+                                         where N - automatically calculated index for new instance of Chrome
+        """
+        print(help)
+        sys.exit()
+      if service == 'mk' or service == 'minikube':
+        cmd = 'minikube start --kubernetes-version=1.14.7 --vm-driver=virtualbox'
+      if service == 'dm' or service == 'docker-machine':
+        cmd = 'docker-machine start'
+      if service == 'mk-ui' or service == 'minikube-dashboard':
+        cmd = 'minikube dashboard'     
+      if service == 'cmp':
+        cmd = 'cd %s/client-web/cmp && yarn && yarn start' %  SRE_TOOLS_PATH
+      if service == 'rmq' or service == 'rabbitmq':
+        cmd = 'helm install stable/rabbitmq --namespace %s --name rabbitmq' %  STORAGES_NAMESPACE   
+        print(cmd)
+      if service == 'chrome':
+        if TMP_FOLDER_PATH == '':
+          sys.exit()
+        if not os.path.exists(TMP_FOLDER_PATH):
+          call('mkdir %s' % TMP_FOLDER_PATH,  shell=True)
+        if not os.path.exists('%s/~' % TMP_FOLDER_PATH):
+          call('mkdir %s' % '%s/~' % TMP_FOLDER_PATH,  shell=True)  
+        chromeDirs = os.listdir('%s/~' % TMP_FOLDER_PATH)
+        numberOfNewChromeDir = len(chromeDirs) + 1  
+        cmd =  'cd %s && /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --disable-web-security --user-data-dir=~/ChromeUserData-%s/' % (TMP_FOLDER_PATH, numberOfNewChromeDir)
+    if re.search('--port-forward=', arg) or re.search('-pf=', arg):
+      if re.search('--port-forward=', arg):
+        service = arg.replace('--port-forward=', '')
+      if re.search('-pf=', arg):
+        service = arg.replace('-pf=', '')
+      if service == '?':
+          help = """
+            USAGE:         
+
+              ./env --port-forward=<service> 
+
+              or
+
+              ./env -pf=<service>
+
+            POSSIBLE VALUES FOR PARAMETER <service>:
+
+              rmq , rabbitmq       <=>   kubectl port-forward --namespace storages svc/rabbitmq 5672:5672
+              
+              rmq-ui , rabbitmq-ui  <=>  kubectl port-forward --namespace storages svc/rabbitmq 15672:15672
+          """
+          print(help)
+          sys.exit()        
+      if service == 'rmq' or service == 'rabbitmq':
+        cmd = 'kubectl port-forward --namespace storages svc/rabbitmq 5672:5672'
+      if service == 'rmq-ui' or service == 'rabbitmq-ui':
+         cmd = 'kubectl port-forward --namespace storages svc/rabbitmq 15672:15672'   
+
+if cmd != '':
+  call(cmd,  shell=True)

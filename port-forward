@@ -1,0 +1,33 @@
+#! /bin/sh
+
+if [[ "${1}" = "--help" ]]; then
+  echo "\n   DESCRIPTION:"
+  echo "\n     Forwards PORT of some service which executes in some pod of kubernetes cluster to the local machine PORT"
+  echo "\n   USAGE:"
+  echo "\n     ./port-forward <service-alias> <source-port> <forward-port>"
+  echo "\n   REQUIRED PARAMETERS:"
+  echo "\n     There is three required parameters SERVICE_ALIACE, SOURCE_PORT and FORWARD_PORT." 
+  echo "\n     The parameter SERVICE_ALIACE should contain some first letters of service name (the same the name of service folder in the folder /microservices ).\n"
+  echo "\n   EXAMPLE:"
+  echo "\n     ./port-forward accounts 9229 8000"
+  echo "\n   This command will forward the port 9229 of the 'accounts' service to local machine port 8000"
+  echo "\n   or (with the same result)"
+  echo "\n     ./port-forward acc 9229 8000\n"
+  exit
+fi
+
+if [[ "${1}" = "" || "${2}" = "" || "${3}" = "" ]]; then
+  echo "\n ERROR: There are 3 required parameters."
+  echo "          Command format: ./port-forward <service-alias> <source-port> <forward-port>"
+  echo "          One or more of them are undefined!' The script is terminated."
+  exit
+fi
+
+if [[ ! -f "./configuration/devlab.config" ]]; then
+  echo "\n ERROR: there is no configuration file './configuration/devlab.config'! The script is terminated.\n"
+  exit
+fi
+
+eval $(cat ./configuration/devlab.config)
+
+kubectl port-forward $(kubectl get pods -n ${NAMESPACE} | grep ${1} | awk '{ print $1 '}) -n ${NAMESPACE} ${2}:${3}

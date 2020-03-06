@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+import os, sys, yaml, re
+from subprocess import call, check_output
+from datetime import datetime
+from hashlib import sha256
+
+class bcolors:
+  HEADER = '\033[95m'
+  RED = '\033[0;31m'
+  BLUE = '\033[94m'
+  GREEN = '\033[92m'
+  YELLOW = '\033[93m'
+  CYAN = '\033[36m'
+  MAGENTA = '\033[35m'
+  FAIL = '\033[91m'
+  ENDC = '\033[0m'
+  BOLD = '\033[1m'
+  UNDERLINE = '\033[4m'
+
+def help():
+  helpText = """
+      PULLING FROM /sre-tools AND PUSHING TO sre-tools-dev
+  """
+  print(helpText)    
+
+############################### Initializing helper functions ########################
+
+################################## Initializing environment configuration ############# 
+
+if not os.path.exists('./configuration/devlab.config'):
+  print('\n ERROR: there is no configuration file \'./configuration/devlab.config\'! The script is terminated.\n')
+  sys.exit()  
+
+SRE_TOOLS_PATH = ''
+ENVIRONMENT = ''
+RELEASES_PATH = './releases'
+currentReleasePath = ''
+REFRESH_VALUES = 1
+DEPLOY_MODE = ''
+CURRENT_REGISTRY_HOST = ''
+CURRENT_REGISTRY_FOLDER = ''
+DOCKERCONFIG_REGISTRY_TOKEN = ''
+DEBUG_MODE = 0
+
+with open('./configuration/devlab.config') as fp:
+  for line in fp:
+    [key, value] = line.split('=')
+    if key == 'SRE_TOOLS_PATH':
+      SRE_TOOLS_PATH = value.replace('\n', '')
+    if key == 'RELEASES_PATH':
+      RELEASES_PATH = value.replace('\n', '')  
+    if key == 'ENVIRONMENT':
+      ENVIRONMENT = value.replace('\n', '') 
+    if key == 'NAMESPACE':
+      NAMESPACE = value.replace('\n', '')  
+    if key == 'CURRENT_REGISTRY':
+      CURRENT_REGISTRY = value.replace('\n', '') 
+    if key == 'PRIVATE_REGISTRY_HOST':
+      PRIVATE_REGISTRY_HOST= value.replace('\n', '') 
+    if key == 'PRIVATE_REGISTRY_FOLDER':
+      PRIVATE_REGISTRY_FOLDER = value.replace('\n', '') 
+    if key == 'AWS_REGISTRY_HOST':
+      AWS_REGISTRY_HOST = value.replace('\n', '') 
+    if key == 'AWS_REGISTRY_FOLDER':
+      AWS_REGISTRY_FOLDER = value.replace('\n', '') 
+
+if len(sys.argv) > 1:
+  for arg in sys.argv:
+    if re.search('--env', arg):
+      ENVIRONMENT = arg.replace('--env=', '')
+    if re.search('--sre-path', arg):
+      SRE_TOOLS_PATH = arg.replace('--sre-path=', '')
+    if re.search('--release', arg):
+      currentRelease = arg.replace('--release=', '') 
+      currentReleasePath = '%s/%s' % (RELEASES_PATH, currentRelease)   
+    if re.search('-r=', arg):
+      currentRelease = arg.replace('-r=', '') 
+      currentReleasePath = '%s/%s' % (RELEASES_PATH, currentRelease)             
+    if re.search('--not-refresh-values', arg):
+      REFRESH_VALUES = 0
+    if re.search('--namespace', arg):
+      NAMESPACE = arg.replace('--namespace=', '')       
+    if re.search('--install', arg):
+      DEPLOY_MODE = 'install' 
+    if arg == '-i':
+      DEPLOY_MODE = 'install'        
+    if re.search('--update', arg):
+      DEPLOY_MODE = 'update'    
+    if arg == '-u':
+      DEPLOY_MODE = 'update' 
+    if re.search('--debug', arg):
+      DEBUG_MODE = 1    
+    if re.search('--help', arg):    
+      help()
+      sys.exit()   
+
+if NAMESPACE == '':
+  print('\n ERROR: the NAMESPACE is undefined! The script is terminated.\n')
+  sys.exit()
+
+
+if SRE_TOOLS_PATH == '':
+  print('\n WARNING: it seems the parameter SRE_TOOLS_PATH is undefined. It\'s recommend to check the configuration file ./configuration/devlab.config \n')
+  sys.exit(1)  
+
+if currentReleasePath == '':
+  currentDateTime = datetime.now().isoformat(sep='_', timespec='seconds').replace(':', '-')
+  currentReleasePath = '%s/%s' % (RELEASES_PATH, currentDateTime)  
+  print('\n WARNING: it seems the parameter \'currentReleasePath\' is undefined. \n')
+  sys.exit(1)  
+
+################################## Refreshing AWS docketregestry access if need #############
+awsDdockerconfigPath = './configuration/devlab.aws.dockerconfig'
+
+if os.path.exists(awsDdockerconfigPath):
+  lasttimeDockerconfigModified = os.path.getmtime(awsDdockerconfigPath)
+  lifeperiodDockerconfig = round(datetime.now().timestamp()) - round(lasttimeDockerconfigModified)
+  _12HoursInSeconds = 43200 
+  if lifeperiodDockerconfig > _12HoursInSeconds:
+    os.remove(awsDdockerconfigPath) 
+  
+if not os.path.exists(awsDdockerconfigPath):
+  call('./refresh-aws-access',  shell=True) 
+
+if os.path.exists(awsDdockerconfigPath):  
+  with open(awsDdockerconfigPath) as fp:
+    for line in fp:
+      DOCKERCONFIG_REGISTRY_TOKEN = line.replace('\n', '')      
+
+if AWS_REGISTRY_HOST == '' or DOCKERCONFIG_REGISTRY_TOKEN == '':
+  print('\n ERROR: the CURRENT_REGISTRY_HOST or/and CURRENT_REGISTRY_FOLDER or/and DOCKERCONFIG_REGISTRY_TOKEN parameters are undefined! The script is terminated.\n')
+  sys.exit()   
+
+################################## Refreshing release values if need ######################### 
+
+currentReleaseFilePath = '%s/release.yaml' % currentReleasePath
+
+with open(currentReleaseFilePath, 'r') as f: 
+  releaseSettings = yaml.load(f, Loader=yaml.FullLoader)
+  for serviceName in releaseSettings['servicesSettings'].keys():
+    imageTag = releaseSettings['servicesSettings'][serviceName]['tag']
+
+    if 'notPullFromStage' in list(releaseSettings['servicesSettings'][serviceName].keys()) and releaseSettings['servicesSettings'][serviceName]['notPullFromStage']:
+      continue
+
+    print('\n %s Copying \'%s\'... %s\n' % (bcolors.GREEN, imageTag, bcolors.ENDC))
+    call('docker pull %s/sre-tools:%s' % (AWS_REGISTRY_HOST, imageTag),  shell=True)    
+    call('docker tag %s/sre-tools:%s %s/sre-tools-dev:%s' % (AWS_REGISTRY_HOST, imageTag, AWS_REGISTRY_HOST, imageTag),  shell=True)
+    print('\n')
+    call('docker push %s/sre-tools-dev:%s' % (AWS_REGISTRY_HOST, imageTag),  shell=True)
+
+

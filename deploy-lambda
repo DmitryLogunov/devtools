@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+
+import sys 
+import argparse
+from subprocess import call
+import os
+import pydash
+import json
+import yaml
+
+#############
+def get_args():
+  parser = argparse.ArgumentParser(description='AWS deploy lambda functions script')
+  parser.add_argument('-e', '--env', default='stage', type=str, help='environment')
+  parser.add_argument('-p', '--path', default='', type=str, help='relative path to aws lambda function')
+  parser.add_argument('-r', '--rootLambdaPath', default='../../aws-lambda-functions', type=str, help='relative root path to lambda functions')
+  parser.add_argument('-t', '--tmpPath', default='./tmp', type=str, help='path to the temparary folder')
+  parser.add_argument('-d', '--deploymentHelmChartPath', default='../kubernetes/helm-charts/api-v3', type=str, help='relative path to deployment folder (with helm cart configs)')
+  parser.add_argument('-s', '--secretsPath', default='../kubernetes/helm-charts/api-v3/secret-values.yaml', type=str, help='relative path to secrets helm chart yaml file)')
+  return parser.parse_args()
+
+def checkAndRefreshTmpFolder(argv):
+  if not os.path.exists(argv.tmpPath):
+    call('mkdir -p %s' % argv.tmpPath,  shell=True)
+
+#############
+def buildAndZipCode(argv):
+  pathToLambdaFunction = '%s/%s' % (argv.rootLambdaPath, argv.path)
+  if not os.path.exists(pathToLambdaFunction):
+    print('\n ERROR: not correct path to lambda function \'%s\'! The script is terminated.\n' % pathToLambdaFunction)
+    sys.exit() 
+    
+  if os.path.exists('%s/dist.zip' % argv.tmpPath):
+    call('rm %s/dist.zip' % argv.tmpPath,  shell=True)
+
+  call('(cd %s && yarn && yarn build)' % pathToLambdaFunction, shell=True)  
+  call('cp -r %s/dist %s/' % (pathToLambdaFunction, argv.tmpPath), shell=True)  
+  call('(cd %s && zip -r dist.zip ./dist/*)' % argv.tmpPath, shell=True)
+
+#############
+def buildConfigurationJSONFile(argv):
+  pathToLambdaFunctionSettings = '%s/%s/deploy-settings.yaml' % (argv.rootLambdaPath, argv.path)
+  if not os.path.exists(pathToLambdaFunctionSettings):
+    print('\n ERROR: not correct path to lambda function settings \'%s\'! The script is terminated.\n' % pathToLambdaFunctionSettings)
+    sys.exit()
+
+  pathToEnvironmentLambdaFunctionSettings = '%s/default.services-values.%s.yaml' % (argv.deploymentHelmChartPath, argv.env)
+  if not os.path.exists(pathToEnvironmentLambdaFunctionSettings):
+    print('\n ERROR: not correct path to lambda function settings \'%s\'! The script is terminated.\n' % pathToLambdaFunctionSettings)
+    sys.exit()  
+
+  pathToSecrets = argv.secretsPath
+  if not os.path.exists(pathToSecrets):
+    print('\n ERROR: not correct path to helm chart secrets \'%s\'! The script is terminated.\n' % pathToSecretss)
+    sys.exit()    
+
+  if os.path.exists('%s/lambda-function.json' % argv.tmpPath):
+    call('rm %s/lambda-function.json' % argv.tmpPath,  shell=True)  
+
+  lambdaFunctionConfiguration = {
+      "FunctionName": "",
+      "Runtime": "",
+      "Role": "",
+      "Handler": "",
+      "Timeout": 0,
+      "MemorySize": 0,
+      "VpcConfig": {
+        "SubnetIds": [],
+        "SecurityGroupIds": []
+      },
+      "Environment": {
+        "Variables": {}
+      },
+      "TracingConfig": {
+        "Mode": "PassThrough"
+      },
+      "Layers": []
+    }
+
+  with open(pathToLambdaFunctionSettings, 'r') as f: 
+    lambdaFunctionSettings = yaml.load(f, Loader=yaml.FullLoader)    
+
+    for key in ['FunctionName', 'Runtime', 'Handler', 'Timeout', 'MemorySize']:
+      lambdaFunctionConfiguration[key] = lambdaFunctionSettings[key] 
+
+    with open(pathToEnvironmentLambdaFunctionSettings, 'r') as f:
+      environmentLambdaFunctionSettings = yaml.load(f, Loader=yaml.FullLoader)    
+
+      lambdaFunctionConfiguration['Role'] = environmentLambdaFunctionSettings['awsLambda']['defaultRoleArn']
+
+      for subnetId in environmentLambdaFunctionSettings['awsLambda']['vpcConfig']['subnetIds']:
+        lambdaFunctionConfiguration['VpcConfig']['SubnetIds'].append(subnetId) 
+
+      for securityGroupId in environmentLambdaFunctionSettings['awsLambda']['vpcConfig']['securityGroupIds']:
+        lambdaFunctionConfiguration['VpcConfig']['SecurityGroupIds'].append(securityGroupId)  
+
+      with open(pathToSecrets, 'r') as f:
+        secrets = yaml.load(f, Loader=yaml.FullLoader) 
+
+        for env in lambdaFunctionSettings['Environment']['Variables']:
+          if env['type'] == 'value':
+            value = env['value']
+            lambdaFunctionConfiguration['Environment']['Variables'][env['name']] = value
+            continue
+          if env['type'] == 'secret':
+            value = pydash.objects.get(secrets, env['configurationPath'])
+            lambdaFunctionConfiguration['Environment']['Variables'][env['name']] = value  
+            continue
+          if env['type'] == 'environmentConfigurationValue':  
+            value = pydash.objects.get(environmentLambdaFunctionSettings, env['configurationPath'])
+            lambdaFunctionConfiguration['Environment']['Variables'][env['name']] = value
+
+        for layer in lambdaFunctionSettings['Layers']:
+          layerArn = pydash.objects.get(environmentLambdaFunctionSettings, layer['configurationPath'])['arn']
+          lambdaFunctionConfiguration['Layers'].append(layerArn)
+  
+  with open('%s/lambda-function.json' % argv.tmpPath, 'w') as outfile:
+    json.dump(lambdaFunctionConfiguration, outfile) 
+
+  return lambdaFunctionConfiguration['FunctionName']           
+
+############
+def deploy(argv, lambdaFunctionName):
+  isLambdaFunctionExists = checkIfLambdaFunctionExists(argv, lambdaFunctionName)
+
+  if not isLambdaFunctionExists:
+    cmd = '(cd %s && aws lambda create-function --zip-file fileb://dist.zip  --cli-input-json file://lambda-function.json)' % argv.tmpPath
+    call(cmd,  shell=True)
+  else:
+    cmd = '(cd %s && aws lambda update-function-configuration --function-name %s --cli-input-json file://lambda-function.json)' % (argv.tmpPath, lambdaFunctionName)
+    call(cmd,  shell=True)
+    cmd = '(cd %s && aws lambda update-function-code --function-name %s --zip-file fileb://dist.zip)' % (argv.tmpPath, lambdaFunctionName)
+    call(cmd,  shell=True)
+   
+
+############
+def clear(argv):
+  if argv.tmpPath == '/' or argv.tmpPath == '' or argv.tmpPath == '.' or argv.tmpPath == './':
+    return
+
+  cmd = 'rm -rf %s' % argv.tmpPath
+  call(cmd,  shell=True)
+
+def checkIfLambdaFunctionExists(argv, lambdaFunctionName):
+  cmd = '(cd %s && aws lambda list-functions > ./lambda-functions-list.json)' % argv.tmpPath   
+  call(cmd,  shell=True)
+
+  with open('%s/lambda-functions-list.json' % argv.tmpPath, 'r') as f:
+    lambdaFunctionsList = json.load(f)
+
+  lambdaFunctionsNames = pydash.collections.map_(lambdaFunctionsList['Functions'], 'FunctionName')
+  
+  return lambdaFunctionName in lambdaFunctionsNames
+
+#############
+def main(argv):
+  checkAndRefreshTmpFolder(argv)
+  buildAndZipCode(argv)
+  lambdaFunctionName = buildConfigurationJSONFile(argv)
+  deploy(argv, lambdaFunctionName)  
+  clear(argv)
+
+if __name__ == "__main__":
+  args = get_args()
+  main(args)

@@ -1,0 +1,10 @@
+SRE_TOOLS_PATH=</local/machine/path/to/sre_tools>
+TMP_FOLDER_PATH=</local/machine/path/to/tmp/folder>
+ENVIRONMENT=minikube
+NAMESPACE=<sre|any namespace for deploying services into current cluster>
+CURRENT_REGISTRY=<PRIVATE|AWS>
+PRIVATE_REGISTRY_HOST=<private_docker_registry_host(optional)>
+PRIVATE_REGISTRY_FOLDER=<private_docker_registry_folder(optional)>
+AWS_REGISTRY_HOST=<aws_registry_host>
+AWS_REGISTRY_FOLDER=<sre_tools_dev|sre_tools>
+DOCKER_EMAIL=<foo@user.email>

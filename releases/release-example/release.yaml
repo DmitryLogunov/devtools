@@ -1,0 +1,23 @@
+commonSettings:
+  apiVersion: apps/v1
+  baseDomain: minikube
+  logsLevel: debug
+  logsFormat: 2
+  sreApiV3Url: http://sre-api-v3.minikube
+  cookieName: __STAGE_RCOPSOSO__
+  usersip: ''
+  
+servicesSettings: 
+  accounts: 
+    enabled: true
+    tag: some-tag.1
+  comments: 
+    enabled: true
+    tag: some-tag.2
+  dictionaries: 
+    enabled: true
+    tag: some-tag.3
+    debugMode: true   
+  sreApiV3: 
+    enabled: true 
+    tag: some-tag.4

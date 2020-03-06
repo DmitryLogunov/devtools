@@ -1,0 +1,17 @@
+#! /bin/sh
+if [[ "${1}" = "--help" ]]; then
+  echo "\n   DESCRIPTION:"
+  echo "\n     Prints out the information about the service which is executed on some tcp PORT"
+  echo "\n   USAGE:"
+  echo "\n     ./show-process <port>"
+  echo "\n   REQUIRED PARAMETERS:"
+  echo "\n     There is one required parameter PORT which defines in the first argument. \n"   
+  exit
+fi
+
+if [[ "${1}" = "" ]]; then
+  echo "\n ERROR: the parameter PORT of service (the first argument in command line) is required and undefined!' The script is terminated.\n"
+  exit
+fi
+
+sudo lsof -i tcp:${1}
